@@ -1,0 +1,188 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Step 1, Pre-requirements (in Production Account)
+Parameters:
+  RepositoryAccountId:
+    Description: Repository Account ID
+    MaxLength: 12
+    MinLength: 12
+    Type: String
+  RepositoryName:
+    Type: String
+  ProductionPipelineArtifactsBucketName:
+    Description: Production Pipeline Artifacts Bucket Name
+    Type: String
+
+Resources:
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: Pipeline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub arn:aws:iam::${RepositoryAccountId}:role/* # Cross Account Access
+              - Effect: Allow
+                Action: 
+                  - iam:PassRole
+                Resource:
+                  - "*"
+                Condition: 
+                  StringEqualsIfExists: 
+                    iam:PassedToService: 
+                      - cloudformation.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                  - cloudformation:*
+                  - rds:*
+                  - sqs:*
+                  - ecs:*
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - "*"
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Description: Creating Amazon S3 bucket for AWS CodePipeline artifacts
+    Properties:
+      BucketName: !Ref ProductionPipelineArtifactsBucketName
+  S3ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Description: Setting Amazon S3 bucket policy for AWS CodePipeline access
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Action: s3:PutObject
+            Resource: !Sub arn:aws:s3:::${S3Bucket}/*
+            Principal: "*"
+            Condition: 
+              StringNotEquals: 
+                s3:x-amz-server-side-encryption: aws:kms
+          - Effect: Deny
+            Action: s3:*
+            Resource: !Sub arn:aws:s3:::${S3Bucket}/*
+            Principal: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:Put*
+            Resource: !Sub arn:aws:s3:::${S3Bucket}/*
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${RepositoryAccountId}:root
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: !Sub arn:aws:s3:::${S3Bucket}
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${RepositoryAccountId}:root
+        Version: 2012-10-17
+  Key:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: An symmetric CMK
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Effect: Allow
+            Action: kms:*
+            Sid: Enable IAM User Permissions
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+            Sid: Allow use of the key
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${RepositoryAccountId}:root
+                - !GetAtt PipelineRole.Arn
+            Resource: "*"
+          - Effect: Allow
+            Sid: Allow attachment of persistent resources
+            Action:
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:RevokeGrant
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${RepositoryAccountId}:root
+                - !GetAtt PipelineRole.Arn
+            Resource: "*"
+            Condition:
+              Bool: 
+                kms:GrantIsForAWSResource: true
+  Alias:  
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/CodePipelineArtifact
+      TargetKeyId:
+        Ref: Key
+        
+  

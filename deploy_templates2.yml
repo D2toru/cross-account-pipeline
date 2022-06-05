@@ -1,0 +1,359 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Step 2  (in Repository Account)
+
+Parameters:
+  ProductionAccountId:
+    Description: Production Account ID
+    MaxLength: 12
+    MinLength: 12
+    Type: String
+  ProductionArtifactS3BucketARN:
+    Description: Production Account S3 Bucket ARN for Artifact (Created by deploy_template1.yml)
+    Type: String
+  CmkARN:
+    Description: Production Account CMK ARN (Created by deploy_template1.yml)
+    Type: String
+  RepositoryName:
+    Description: TargetRepositoryName
+    Type: String
+  TargetEventBusName:
+    Description: Target Event Bus Name (Will Create by deploy_template3.yml)
+    Type: String
+  DevelopPipelineArtifactsBucketName:
+    Description: Develop Pipeline Artifacts Bucket Name
+    Type: String
+  DeployStackName:
+    Description: Stack Name To Deploy
+    Type: String
+  DevelopPipelineName:
+    Description: Develop Pipeline Name
+    Type: String
+  ApprovalTopicAddress:
+    Description: Approval Topic Email Address in Develop Pipeline
+    Type: String
+  ApprovalTopicName:
+    Description: Approval Topic Name
+    Type: String
+
+Resources:
+  CrossAccountEventRuleRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution-for-production-account
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub 'arn:aws:events:${AWS::Region}:${ProductionAccountId}:event-bus/${TargetEventBusName}'
+  DevelopAccountEventRuleRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution-for-develop-account
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: 
+                  - !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${DevelopPipelineName}
+  CodeCommitRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+              - !Sub arn:aws:iam::${ProductionAccountId}:root
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: source
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:Get*
+                  - s3:Put*
+                Resource:
+                  - !Sub ${ProductionArtifactS3BucketARN}/*
+              - Effect: Allow
+                Action: 
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - !Ref CmkARN
+              - Effect: Allow
+                Action: 
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:CancelUploadArchive
+                Resource:
+                  - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}
+  DevelopPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: Pipeline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource:
+                  - !Join 
+                    - ''
+                    - - !GetAtt DevelopPipelineArtifactsBucket.Arn
+                      - '/*'
+              - Effect: Allow
+                Action: 
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:CancelUploadArchive
+                Resource:
+                  - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}
+              - Effect: Allow
+                Action: 
+                  - iam:PassRole
+                Resource:
+                  - "*"
+                Condition: 
+                  StringEqualsIfExists: 
+                    iam:PassedToService: 
+                      - cloudformation.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                  - cloudformation:*
+                  - rds:*
+                  - sqs:*
+                  - ecs:*
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action: 
+                  - cloudformation:ValidateTemplate
+                Resource:
+                  - "*"
+  CFnRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: 
+              - cloudformation.amazonaws.com
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CloudFormationRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - '*'
+                Resource: '*'
+  ExecDevPipelineRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - dev
+      Targets:
+        - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${DevelopPipelineName}
+          RoleArn: !GetAtt DevelopAccountEventRuleRole.Arn
+          Id: exec-template-pipeline-in-develop
+  ExecProdPipelineRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - prod
+      Targets:
+        - Arn: !Sub 'arn:aws:events:${AWS::Region}:${ProductionAccountId}:event-bus/${TargetEventBusName}'
+          RoleArn: !GetAtt CrossAccountEventRuleRole.Arn
+          Id: exec-template-pipeline-in-production
+  DevelopPipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DevelopPipelineArtifactsBucketName
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref ApprovalTopicName
+      Subscription: 
+        - Endpoint: !Ref ApprovalTopicAddress
+          Protocol: email
+  DevelopPipeline: 
+    Type: AWS::CodePipeline::Pipeline
+    Properties: 
+      Name: !Ref DevelopPipelineName
+      RoleArn: !GetAtt DevelopPipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: dev
+                PollForSourceChanges: false
+              RunOrder: 1
+              ActionTypeId:
+                Version: 1
+                Provider: CodeCommit
+                Category: Source
+                Owner: AWS
+        - Name: DeployStage
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !GetAtt CFnRole.Arn
+                StackName: !Ref DeployStackName 
+                ChangeSetName: !Sub ${DeployStackName}-changeset
+                TemplateConfiguration: !Sub SourceOutput::templates/deploy_template.json
+                TemplatePath: !Sub SourceOutput::templates/deploy_template.yml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+              RunOrder: '1'
+            - Name: ManualApprival
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                CustomData: in develop account pipeline, please approval.
+                # ExternalEntityLink: 
+                NotificationArn: !Ref Topic
+              RunOrder: '2'
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: !Sub ${DeployStackName}-changeset
+                RoleArn: !GetAtt CFnRole.Arn
+                StackName: !Ref DeployStackName
+              RunOrder: '3'
+      ArtifactStore: 
+        Type: S3 
+        Location: !Ref DevelopPipelineArtifactsBucket
